@@ -1,0 +1,11 @@
+src/
+pkg/
+
+# downloaded sources
+Codex.dmg
+better-sqlite3-*.tgz
+node-pty-*.tgz
+
+# built artifacts
+*.pkg.tar.zst
+*.pkg.tar.zst.sig

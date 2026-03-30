@@ -1,0 +1,138 @@
+#!/bin/bash
+set -euo pipefail
+
+appdir="/usr/lib/codex-app-macos-port"
+electron="/usr/lib/electron39/electron"
+webview_dir="${appdir}/content/webview"
+
+[[ -x "${electron}" ]] || {
+  echo "Missing Electron runtime: ${electron}" >&2
+  exit 1
+}
+
+export CODEX_CLI_PATH="${CODEX_CLI_PATH:-$(command -v codex || true)}"
+export BUILD_FLAVOR="${BUILD_FLAVOR:-prod}"
+export NODE_ENV="${NODE_ENV:-production}"
+export ELECTRON_RENDERER_URL="${ELECTRON_RENDERER_URL:-http://localhost:5175/}"
+extra_flags=()
+if [[ -n "${CODEX_ELECTRON_FLAGS:-}" ]]; then
+  read -r -a extra_flags <<<"${CODEX_ELECTRON_FLAGS}"
+fi
+render_profile="${CODEX_RENDER_PROFILE:-stable}"
+
+# Electron + Wayland can produce sidebar flicker artifacts on some Arch setups.
+# Default to X11 backend when running in Wayland, overridable via CODEX_OZONE_PLATFORM.
+if [[ -n "${CODEX_OZONE_PLATFORM:-}" ]]; then
+  ozone_platform="${CODEX_OZONE_PLATFORM}"
+elif [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
+  ozone_platform="x11"
+else
+  ozone_platform="auto"
+fi
+
+render_flags=()
+if [[ "${render_profile}" == "stable" ]]; then
+  # Strong fallback profile for Intel/Wayland flicker issues.
+  render_flags=(
+    "--disable-gpu"
+    "--disable-gpu-compositing"
+    "--disable-gpu-rasterization"
+    "--disable-zero-copy"
+    "--use-gl=swiftshader"
+  )
+fi
+
+http_pid=""
+electron_pid=""
+tmpdir=""
+
+cleanup() {
+  [[ -n "${electron_pid}" ]] && wait "${electron_pid}" 2>/dev/null || true
+  [[ -n "${http_pid}" ]] && kill "${http_pid}" 2>/dev/null || true
+  [[ -n "${http_pid}" ]] && wait "${http_pid}" 2>/dev/null || true
+  [[ -n "${tmpdir}" ]] && rm -rf "${tmpdir}"
+}
+
+forward_signal() {
+  local sig="$1"
+
+  if [[ -n "${electron_pid}" ]] && kill -0 "${electron_pid}" 2>/dev/null; then
+    kill -"${sig}" "${electron_pid}" 2>/dev/null || true
+    wait "${electron_pid}" 2>/dev/null || true
+  fi
+
+  exit 0
+}
+
+trap cleanup EXIT
+trap 'forward_signal HUP' HUP
+trap 'forward_signal INT' INT
+trap 'forward_signal TERM' TERM
+
+if [[ -d "${webview_dir}" ]] && find "${webview_dir}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  tmpdir="$(mktemp -d)"
+  ready_file="${tmpdir}/ready"
+  fail_file="${tmpdir}/fail"
+
+  python - 5175 "${webview_dir}" "${ready_file}" "${fail_file}" >/dev/null 2>&1 <<'PY' &
+import http.server
+import os
+import socketserver
+import sys
+
+port = int(sys.argv[1])
+root = sys.argv[2]
+ready_file = sys.argv[3]
+fail_file = sys.argv[4]
+
+os.chdir(root)
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+class TCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+try:
+    with TCPServer(("127.0.0.1", port), Handler) as httpd:
+        with open(ready_file, "w") as f:
+            f.write("ok")
+        httpd.serve_forever()
+except Exception as e:
+    with open(fail_file, "w") as f:
+        f.write(str(e))
+    raise
+PY
+  http_pid=$!
+
+  for _ in {1..50}; do
+    [[ -f "${ready_file}" ]] && break
+    if [[ -f "${fail_file}" ]]; then
+      echo "Failed to start local webview server on 127.0.0.1:5175" >&2
+      cat "${fail_file}" >&2
+      exit 1
+    fi
+    kill -0 "${http_pid}" 2>/dev/null || {
+      echo "Local webview server exited before becoming ready" >&2
+      exit 1
+    }
+    sleep 0.1
+  done
+
+  [[ -f "${ready_file}" ]] || {
+    echo "Timed out waiting for local webview server on 127.0.0.1:5175" >&2
+    exit 1
+  }
+fi
+
+"${electron}" \
+  --enable-sandbox \
+  --ozone-platform-hint="${ozone_platform}" \
+  --ozone-platform="${ozone_platform}" \
+  "${appdir}/resources/app.asar" \
+  "${render_flags[@]}" \
+  "${extra_flags[@]}" \
+  "$@" &
+electron_pid=$!
+wait "${electron_pid}"
