@@ -1,13 +1,9 @@
-name: Release Arch Package
+name: Release Linux Executable
 
 on:
   push:
     tags:
       - 'v*'
-  schedule:
-    - cron: '0 0 * * 1'
-    - cron: '0 1 * * 1'
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,25 +15,10 @@ jobs:
       image: archlinux:latest
 
     steps:
-      - name: Schedule gate (Europe/Zurich 02:00)
-        id: gate
-        run: |
-          should_run="true"
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            local_hour="$(TZ=Europe/Zurich date +%H)"
-            local_dow="$(TZ=Europe/Zurich date +%u)"
-            if [ "$local_dow" != "1" ] || [ "$local_hour" != "02" ]; then
-              should_run="false"
-            fi
-          fi
-          echo "should_run=${should_run}" >> "$GITHUB_OUTPUT"
-
       - name: Checkout (bootstrap)
-        if: steps.gate.outputs.should_run == 'true'
         uses: actions/checkout@v4
 
       - name: Install build dependencies
-        if: steps.gate.outputs.should_run == 'true'
         run: |
           pacman -Sy --noconfirm --needed \
             base-devel \
@@ -52,57 +33,31 @@ jobs:
             xdg-utils
 
       - name: Checkout (git mode)
-        if: steps.gate.outputs.should_run == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Configure git safety
-        if: steps.gate.outputs.should_run == 'true'
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Resolve release tag
+        id: release_meta
+        run: |
+          tag="${{ github.ref_name }}"
+          release_name="Release ${tag}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+
       - name: Prepare build user
-        if: steps.gate.outputs.should_run == 'true'
         run: |
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
 
-      - name: Resolve release tag
-        if: steps.gate.outputs.should_run == 'true'
-        id: release_meta
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            tag="${{ github.ref_name }}"
-            release_name="Release ${tag}"
-          else
-            tag="weekly-$(TZ=Europe/Zurich date +%Y%m%d)"
-            release_name="Weekly Release $(TZ=Europe/Zurich date +%Y-%m-%d)"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
-
-      - name: Ensure tag exists (scheduled/manual)
-        if: steps.gate.outputs.should_run == 'true' && github.ref_type != 'tag'
-        env:
-          TAG: ${{ steps.release_meta.outputs.tag }}
-        run: |
-          git fetch --tags
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag already exists: ${TAG}"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" -m "${TAG}"
-          git push origin "${TAG}"
-
       - name: Build package
-        if: steps.gate.outputs.should_run == 'true'
         run: |
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg -f --noconfirm"
 
       - name: Build portable executable artifact
-        if: steps.gate.outputs.should_run == 'true'
         id: artifacts
         run: |
           PKG_FILE="$(su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --packagelist | head -n1")"
@@ -125,14 +80,14 @@ jobs:
           cp -a "$EXTRACT_DIR/usr/lib/codex-app" "$PORTABLE_DIR/lib/codex-app"
           cp -a /usr/lib/electron39 "$PORTABLE_DIR/lib/electron39"
 
-          cat > "${PORTABLE_DIR}/codex-app" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export CODEX_APPDIR="${HERE}/lib/codex-app"
-export CODEX_ELECTRON_PATH="${HERE}/lib/electron39/electron"
-exec "${HERE}/bin/codex-app" "$@"
-EOF
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' \
+            'export CODEX_APPDIR="${HERE}/lib/codex-app"' \
+            'export CODEX_ELECTRON_PATH="${HERE}/lib/electron39/electron"' \
+            'exec "${HERE}/bin/codex-app" "$@"' \
+            > "${PORTABLE_DIR}/codex-app"
           chmod +x "${PORTABLE_DIR}/codex-app"
 
           mkdir -p "$GITHUB_WORKSPACE/dist"
@@ -146,7 +101,6 @@ EOF
           echo "sha_file=$SHA_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifacts
-        if: steps.gate.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: linux-executable
@@ -155,7 +109,6 @@ EOF
             ${{ steps.artifacts.outputs.sha_file }}
 
       - name: Publish GitHub release assets
-        if: steps.gate.outputs.should_run == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
