@@ -1,18 +1,32 @@
-# Codex App macOS to Arch Linux Package
+# Codex App Packaging for Arch Linux
 
-This repository packages the macOS Codex Desktop app for Arch Linux (`x86_64`) using `makepkg`.
+This repository provides an Arch Linux package build for Codex Desktop (`x86_64`) from the macOS DMG source.
 
-## Requirements
+## Scope
 
-- Arch Linux (`x86_64`)
-- `base-devel`
-- Network access to download:
-  - `Codex.dmg`
-  - npm tarballs for `better-sqlite3` and `node-pty`
+- Target distro: Arch Linux
+- Target architecture: `x86_64`
+- Package format: pacman package (`.pkg.tar.zst`)
 
-## Build and Install
+## Prerequisites
 
-From the repository root:
+Install base packaging tools:
+
+```bash
+sudo pacman -S --needed base-devel git
+```
+
+`makepkg -s` installs package dependencies declared in `PKGBUILD` automatically.
+
+Network access is required to download:
+
+- `Codex.dmg`
+- `better-sqlite3` npm tarball
+- `node-pty` npm tarball
+
+## Build Workflow
+
+From repository root:
 
 ```bash
 makepkg -si
@@ -24,8 +38,30 @@ makepkg -si
 codex-app
 ```
 
-## Build Notes
+## Output Layout
 
-- The package extracts the app from `Codex.dmg`.
-- Native modules (`better-sqlite3`, `node-pty`) are rebuilt for Linux and Electron 39.
-- The final package installs a Linux launcher and desktop entry.
+- Build workspace: `src/`, `pkg/`
+- Built package: `*.pkg.tar.zst` (repo root)
+
+## Update Process
+
+When updating package inputs:
+
+1. Update `pkgver`, source URLs/versions, and checksums in `PKGBUILD`.
+2. Regenerate checksums if needed:
+
+```bash
+updpkgsums
+```
+
+3. Regenerate `.SRCINFO`:
+
+```bash
+makepkg --printsrcinfo > .SRCINFO
+```
+
+4. Rebuild:
+
+```bash
+makepkg -f
+```

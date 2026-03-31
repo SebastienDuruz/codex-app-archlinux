@@ -1,12 +1,28 @@
 #!/bin/bash
 set -euo pipefail
 
-appdir="/usr/lib/codex-app-macos-port"
-electron="/usr/lib/electron39/electron"
+appdir="/usr/lib/codex-app"
 webview_dir="${appdir}/content/webview"
 
+electron_candidates=()
+if [[ -n "${CODEX_ELECTRON_PATH:-}" ]]; then
+  electron_candidates+=("${CODEX_ELECTRON_PATH}")
+fi
+electron_candidates+=(
+  "/usr/lib/electron39/electron"
+  "/usr/lib/electron/electron"
+)
+
+electron=""
+for candidate in "${electron_candidates[@]}"; do
+  if [[ -x "${candidate}" ]]; then
+    electron="${candidate}"
+    break
+  fi
+done
+
 [[ -x "${electron}" ]] || {
-  echo "Missing Electron runtime: ${electron}" >&2
+  echo "Missing Electron runtime. Checked: ${electron_candidates[*]}" >&2
   exit 1
 }
 
