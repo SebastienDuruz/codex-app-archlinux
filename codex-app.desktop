@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=OpenAI Codex
-Comment=OpenAI Codex desktop app (macOS port for Arch Linux)
+Comment=OpenAI Codex desktop app
 Exec=codex-app %U
 Icon=codex-app
 Terminal=false

@@ -1,9 +1,9 @@
-# Maintainer: Local build
+# Maintainer: Local package build
 
-pkgname=codex-app-macos-port
+pkgname=codex-app
 pkgver=26.305.950
 pkgrel=1
-pkgdesc="Port Arch Linux de Codex Desktop a partir de l'application macOS"
+pkgdesc="Linux package of Codex Desktop"
 arch=('x86_64')
 url="https://developers.openai.com/codex/app/"
 license=('custom')
