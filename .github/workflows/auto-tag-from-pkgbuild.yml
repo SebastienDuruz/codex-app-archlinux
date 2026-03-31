@@ -1,49 +1,115 @@
-name: Auto Tag From PKGBUILD
+name: Auto Version Tag
 
 on:
-  push:
-    branches:
-      - main
+  schedule:
+    - cron: '0 0 * * *'
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  tag:
+  bump-and-tag:
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
 
     steps:
-      - name: Checkout
+      - name: Schedule gate (Europe/Zurich 02:00 daily)
+        id: gate
+        run: |
+          should_run="true"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            local_hour="$(TZ=Europe/Zurich date +%H)"
+            if [ "$local_hour" != "02" ]; then
+              should_run="false"
+            fi
+          fi
+          echo "should_run=${should_run}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (bootstrap)
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install tooling
+        if: steps.gate.outputs.should_run == 'true'
+        run: pacman -Sy --noconfirm --needed base-devel git pacman-contrib
+
+      - name: Checkout (git mode)
+        if: steps.gate.outputs.should_run == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute version tag from PKGBUILD
-        id: version
-        run: |
-          pkgver="$(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD | tr -d "'\"[:space:]")"
-          pkgrel="$(awk -F= '/^pkgrel=/{print $2; exit}' PKGBUILD | tr -d "'\"[:space:]")"
+      - name: Configure git safety
+        if: steps.gate.outputs.should_run == 'true'
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-          if [ -z "$pkgver" ] || [ -z "$pkgrel" ]; then
-            echo "Unable to read pkgver/pkgrel from PKGBUILD" >&2
-            exit 1
+      - name: Prepare build user
+        if: steps.gate.outputs.should_run == 'true'
+        run: |
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Compute next semantic version
+        if: steps.gate.outputs.should_run == 'true'
+        id: next
+        run: |
+          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+          if [ -z "$latest_tag" ]; then
+            next_version="$(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD | tr -d "'\"[:space:]")"
+            if [ -z "$next_version" ]; then
+              echo "Unable to read pkgver from PKGBUILD" >&2
+              exit 1
+            fi
+            next_tag="v${next_version}"
+          else
+            version="${latest_tag#v}"
+            IFS='.' read -r major minor patch <<< "$version"
+
+            if [ -z "$major" ] || [ -z "$minor" ] || [ -z "$patch" ]; then
+              echo "Invalid semantic tag format: $latest_tag" >&2
+              exit 1
+            fi
+
+            next_patch=$((patch + 1))
+            next_version="${major}.${minor}.${next_patch}"
+            next_tag="v${next_version}"
           fi
 
-          tag="v${pkgver}-${pkgrel}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "next_version=$next_version" >> "$GITHUB_OUTPUT"
+          echo "next_tag=$next_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Create and push tag if missing
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
+      - name: Update PKGBUILD and .SRCINFO
+        if: steps.gate.outputs.should_run == 'true'
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag already exists: ${TAG}"
+          sed -i -E "s/^pkgver=.*/pkgver=${{ steps.next.outputs.next_version }}/" PKGBUILD
+          sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          su builder -c "cd '$GITHUB_WORKSPACE' && updpkgsums"
+          su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Commit version bump and push tag
+        if: steps.gate.outputs.should_run == 'true'
+        env:
+          NEXT_TAG: ${{ steps.next.outputs.next_tag }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${NEXT_TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists: ${NEXT_TAG}"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "${TAG}"
+          if ! git diff --quiet -- PKGBUILD .SRCINFO; then
+            git add PKGBUILD .SRCINFO
+            git commit -m "chore(release): bump version to ${NEXT_TAG#v}"
+            git push origin "HEAD:${BRANCH_NAME}"
+          else
+            echo "No PKGBUILD/.SRCINFO changes to commit"
+          fi
+
+          git tag -a "${NEXT_TAG}" -m "Release ${NEXT_TAG}"
+          git push origin "${NEXT_TAG}"
