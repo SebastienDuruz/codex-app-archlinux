@@ -1,0 +1,49 @@
+name: Auto Tag From PKGBUILD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version tag from PKGBUILD
+        id: version
+        run: |
+          pkgver="$(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD | tr -d "'\"[:space:]")"
+          pkgrel="$(awk -F= '/^pkgrel=/{print $2; exit}' PKGBUILD | tr -d "'\"[:space:]")"
+
+          if [ -z "$pkgver" ] || [ -z "$pkgrel" ]; then
+            echo "Unable to read pkgver/pkgrel from PKGBUILD" >&2
+            exit 1
+          fi
+
+          tag="v${pkgver}-${pkgrel}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag if missing
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists: ${TAG}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"

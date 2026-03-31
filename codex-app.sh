@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-appdir="/usr/lib/codex-app"
+appdir="${CODEX_APPDIR:-/usr/lib/codex-app}"
 webview_dir="${appdir}/content/webview"
 
 electron_candidates=()

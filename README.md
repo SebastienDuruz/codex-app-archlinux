@@ -38,6 +38,22 @@ makepkg -si
 codex-app
 ```
 
+## Run Release Executable
+
+Releases include a portable executable bundle for Linux:
+
+- `codex-app-linux-x86_64.tar.gz`
+- `codex-app-linux-x86_64.tar.gz.sha256`
+
+Verify and run:
+
+```bash
+sha256sum -c codex-app-linux-x86_64.tar.gz.sha256
+tar -xzf codex-app-linux-x86_64.tar.gz
+chmod +x codex-app-linux-x86_64/codex-app
+./codex-app-linux-x86_64/codex-app
+```
+
 ## Output Layout
 
 - Build workspace: `src/`, `pkg/`
