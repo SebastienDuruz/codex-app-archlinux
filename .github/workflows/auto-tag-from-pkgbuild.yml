@@ -15,24 +15,25 @@ jobs:
       image: archlinux:latest
 
     steps:
+      - name: Install git and tooling
+        run: pacman -Sy --noconfirm --needed base-devel git pacman-contrib
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Install tooling
-        run: pacman -Sy --noconfirm --needed base-devel git pacman-contrib
 
       - name: Configure git safety
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Prepare build user
         run: |
-          useradd -m builder
+          id -u builder >/dev/null 2>&1 || useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
 
       - name: Compute next semantic version
         id: next
+        working-directory: ${{ github.workspace }}
         run: |
           latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
           if [ -z "$latest_tag" ]; then
@@ -44,7 +45,9 @@ jobs:
             next_tag="v${next_version}"
           else
             version="${latest_tag#v}"
-            IFS='.' read -r major minor patch <<< "$version"
+            IFS='.' read -r major minor patch <<EOF
+          $version
+          EOF
 
             if [ -z "$major" ] || [ -z "$minor" ] || [ -z "$patch" ]; then
               echo "Invalid semantic tag format: $latest_tag" >&2
@@ -60,6 +63,7 @@ jobs:
           echo "next_tag=$next_tag" >> "$GITHUB_OUTPUT"
 
       - name: Update PKGBUILD and .SRCINFO
+        working-directory: ${{ github.workspace }}
         run: |
           sed -i -E "s/^pkgver=.*/pkgver=${{ steps.next.outputs.next_version }}/" PKGBUILD
           sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
@@ -67,6 +71,7 @@ jobs:
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Commit version bump and push tag
+        working-directory: ${{ github.workspace }}
         env:
           NEXT_TAG: ${{ steps.next.outputs.next_tag }}
           BRANCH_NAME: ${{ github.ref_name }}
