@@ -1,0 +1,254 @@
+name: Release on Main Change or Nightly Upstream Update
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          pacman -Sy --noconfirm --needed \
+            base-devel \
+            git \
+            pacman-contrib \
+            p7zip \
+            libicns \
+            nodejs \
+            npm \
+            electron39 \
+            python \
+            hicolor-icon-theme \
+            xdg-utils \
+            libarchive
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure git safety
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Prepare build user
+        run: |
+          set -euo pipefail
+          id -u builder >/dev/null 2>&1 || useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Detect releasable change
+        id: detect
+        working-directory: ${{ github.workspace }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "reason=main push" >> "$GITHUB_OUTPUT"
+            echo "Main changed: release will proceed."
+            exit 0
+          fi
+
+          probe_dir="$(mktemp -d)"
+          trap 'rm -rf "$probe_dir"' EXIT
+
+          cp PKGBUILD "$probe_dir/PKGBUILD"
+          [[ -f .SRCINFO ]] && cp .SRCINFO "$probe_dir/.SRCINFO" || true
+          chown -R builder:builder "$probe_dir"
+
+          su builder -c "cd '$probe_dir' && updpkgsums"
+          su builder -c "cd '$probe_dir' && makepkg --printsrcinfo > .SRCINFO"
+
+          if cmp -s PKGBUILD "$probe_dir/PKGBUILD" && cmp -s .SRCINFO "$probe_dir/.SRCINFO"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "reason=no packaging drift" >> "$GITHUB_OUTPUT"
+            echo "No upstream packaging change detected."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "reason=packaging drift detected" >> "$GITHUB_OUTPUT"
+            echo "Upstream packaging drift detected: release will proceed."
+          fi
+
+      - name: Stop when there is nothing to release
+        if: steps.detect.outputs.changed != 'true'
+        run: |
+          echo "No release needed."
+          exit 0
+
+      - name: Compute next semantic version
+        id: version
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+
+          if [[ -z "$latest_tag" ]]; then
+            current_pkgver="$(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD | tr -d "'\"[:space:]")"
+            if [[ -z "$current_pkgver" ]]; then
+              echo "Unable to read pkgver from PKGBUILD" >&2
+              exit 1
+            fi
+            next_version="$current_pkgver"
+          else
+            version="${latest_tag#v}"
+            IFS='.' read -r major minor patch <<< "$version"
+
+            if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
+              echo "Invalid semantic tag format: $latest_tag" >&2
+              exit 1
+            fi
+
+            next_version="${major}.${minor}.$((patch + 1))"
+          fi
+
+          next_tag="v${next_version}"
+
+          echo "next_version=$next_version" >> "$GITHUB_OUTPUT"
+          echo "next_tag=$next_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if tag already exists remotely
+        working-directory: ${{ github.workspace }}
+        env:
+          NEXT_TAG: ${{ steps.version.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${NEXT_TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists: ${NEXT_TAG}"
+            exit 0
+          fi
+
+      - name: Apply release version and regenerate metadata
+        working-directory: ${{ github.workspace }}
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          set -euo pipefail
+
+          sed -i -E "s/^pkgver=.*/pkgver=${NEXT_VERSION}/" PKGBUILD
+          sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+          su builder -c "cd '$GITHUB_WORKSPACE' && updpkgsums"
+          su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Commit release metadata
+        working-directory: ${{ github.workspace }}
+        env:
+          NEXT_TAG: ${{ steps.version.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add PKGBUILD .SRCINFO
+          git commit -m "chore(release): bump version to ${NEXT_TAG#v}"
+
+          git push origin "HEAD:main"
+
+      - name: Create and push tag
+        working-directory: ${{ github.workspace }}
+        env:
+          NEXT_TAG: ${{ steps.version.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          git tag -a "${NEXT_TAG}" -m "Release ${NEXT_TAG}"
+          git push origin "${NEXT_TAG}"
+
+      - name: Build package
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          su builder -c "cd '$GITHUB_WORKSPACE' && makepkg -f --noconfirm"
+
+      - name: Build portable executable artifact
+        id: artifacts
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+
+          PKG_FILE="$(su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --packagelist | head -n1")"
+          if [[ -z "$PKG_FILE" || ! -f "$PKG_FILE" ]]; then
+            echo "Built package not found" >&2
+            exit 1
+          fi
+
+          WORK_DIR="$(mktemp -d)"
+          trap 'rm -rf "$WORK_DIR"' EXIT
+
+          EXTRACT_DIR="${WORK_DIR}/pkgroot"
+          PORTABLE_NAME="codex-app-linux-x86_64"
+          PORTABLE_DIR="${WORK_DIR}/${PORTABLE_NAME}"
+
+          mkdir -p "$EXTRACT_DIR" "$PORTABLE_DIR/bin" "$PORTABLE_DIR/lib"
+
+          bsdtar -xpf "$PKG_FILE" -C "$EXTRACT_DIR"
+          rm -f "$EXTRACT_DIR/.PKGINFO" "$EXTRACT_DIR/.BUILDINFO" "$EXTRACT_DIR/.MTREE"
+
+          cp -a "$EXTRACT_DIR/usr/bin/codex-app" "$PORTABLE_DIR/bin/codex-app"
+          cp -a "$EXTRACT_DIR/usr/lib/codex-app" "$PORTABLE_DIR/lib/codex-app"
+          cp -a /usr/lib/electron39 "$PORTABLE_DIR/lib/electron39"
+
+          cat > "${PORTABLE_DIR}/codex-app" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export CODEX_APPDIR="${HERE}/lib/codex-app"
+          export CODEX_ELECTRON_PATH="${HERE}/lib/electron39/electron"
+          exec "${HERE}/bin/codex-app" "$@"
+          EOF
+
+          chmod +x "${PORTABLE_DIR}/codex-app"
+
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          ARCHIVE_FILE="$GITHUB_WORKSPACE/dist/${PORTABLE_NAME}.tar.gz"
+          tar -C "$WORK_DIR" -czf "$ARCHIVE_FILE" "$PORTABLE_NAME"
+
+          SHA_FILE="${ARCHIVE_FILE}.sha256"
+          sha256sum "$ARCHIVE_FILE" > "$SHA_FILE"
+
+          echo "pkg_file=$ARCHIVE_FILE" >> "$GITHUB_OUTPUT"
+          echo "sha_file=$SHA_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-executable-${{ steps.version.outputs.next_tag }}
+          path: |
+            ${{ steps.artifacts.outputs.pkg_file }}
+            ${{ steps.artifacts.outputs.sha_file }}
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.next_tag }}
+          name: Release ${{ steps.version.outputs.next_tag }}
+          files: |
+            ${{ steps.artifacts.outputs.pkg_file }}
+            ${{ steps.artifacts.outputs.sha_file }}
+          generate_release_notes: true
