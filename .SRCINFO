@@ -1,6 +1,6 @@
 pkgbase = codex-app
 	pkgdesc = Linux package of Codex Desktop
-	pkgver = 1.0.15
+	pkgver = 1.0.16
 	pkgrel = 1
 	url = https://developers.openai.com/codex/app/
 	arch = x86_64
@@ -21,7 +21,7 @@ pkgbase = codex-app
 	source = node-pty-1.1.0.tgz::https://registry.npmjs.org/node-pty/-/node-pty-1.1.0.tgz
 	source = codex-app.sh
 	source = codex-app.desktop
-	sha256sums = 2544cc3cdab8032cdde1203d86f3b804108d84cd2a6c2149efc88805b256c523
+	sha256sums = 12217f7fc7e7a40dcff77fd5b30aad38ae9cbbab1fb49ca8cab3acafe0d13ebc
 	sha256sums = 0a3cd0554b063c3185b9912ef7059b84455a2e411d637faa0166fef9fefa04c2
 	sha256sums = c7517f19083ddcb05f276904680eb2b11a6b5ecab778b8e4e5685a6d645b3f60
 	sha256sums = c6c7a3f61e963020d1cfeb1b6f56e42d89b98e4c0e8f9af73a84ade8b518ff59
