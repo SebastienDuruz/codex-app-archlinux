@@ -1,5 +1,6 @@
 src/
 pkg/
+dist/
 .idea/
 
 # downloaded sources
@@ -10,3 +11,7 @@ node-pty-*.tgz
 # built artifacts
 *.pkg.tar.zst
 *.pkg.tar.zst.sig
+
+.codex
+codex-app-linux-x86_64.tar.gz.sha256
+codex-app-linux-x86_64.tar.gz
