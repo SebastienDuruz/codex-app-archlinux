@@ -81,3 +81,9 @@ makepkg --printsrcinfo > .SRCINFO
 ```bash
 makepkg -f
 ```
+
+## Checksum Policy
+
+`Codex.dmg` is served from a rolling CDN URL and may change without notice.
+To avoid recurring build breaks from checksum drift, the PKGBUILD uses `SKIP`
+for the DMG checksum while keeping checksums for npm tarballs pinned.

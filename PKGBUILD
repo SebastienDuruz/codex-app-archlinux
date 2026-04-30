@@ -1,12 +1,12 @@
 # Maintainer: Local package build
 
 pkgname=codex-app
-pkgver=1.0.3
+pkgver=1.0.7
 pkgrel=1
 pkgdesc="Linux package of Codex Desktop"
 arch=('x86_64')
 url="https://developers.openai.com/codex/app/"
-license=('custom')
+license=('MIT')
 
 depends=(
   'electron39'
@@ -23,26 +23,18 @@ makedepends=(
 )
 
 _electron_major=39
-_better_sqlite3_ver=12.5.0
-_node_pty_ver=1.1.0
 
 source=(
   "Codex.dmg::https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
-  "better-sqlite3-${_better_sqlite3_ver}.tgz::https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-${_better_sqlite3_ver}.tgz"
-  "node-pty-${_node_pty_ver}.tgz::https://registry.npmjs.org/node-pty/-/node-pty-${_node_pty_ver}.tgz"
   "codex-app.sh"
   "codex-app.desktop"
 )
 
 noextract=(
   'Codex.dmg'
-  "better-sqlite3-${_better_sqlite3_ver}.tgz"
-  "node-pty-${_node_pty_ver}.tgz"
 )
 
-sha256sums=('681a12ac481a3100fbf402c51e156830c65a0bf6f6cc51885e68df74686bdb7b'
-            '0a3cd0554b063c3185b9912ef7059b84455a2e411d637faa0166fef9fefa04c2'
-            'c7517f19083ddcb05f276904680eb2b11a6b5ecab778b8e4e5685a6d645b3f60'
+sha256sums=('8fb2a3f2b040968ef44b74d6f23c2ecc087de4bac93ef329b58c0aeadc6c997c'
             'c6c7a3f61e963020d1cfeb1b6f56e42d89b98e4c0e8f9af73a84ade8b518ff59'
             '7d4460887df563d7fd5465db0ff950fb9a0b119556c9d659302359f8b12c6a7a')
 
@@ -78,33 +70,26 @@ prepare() {
   bs3_ver="$(node -p "require('${srcdir}/app-extracted/node_modules/better-sqlite3/package.json').version")"
   npty_ver="$(node -p "require('${srcdir}/app-extracted/node_modules/node-pty/package.json').version")"
 
-  [[ "${bs3_ver}" == "${_better_sqlite3_ver}" ]] || {
-    echo "better-sqlite3 version mismatch: app=${bs3_ver}, pkgbuild=${_better_sqlite3_ver}"
-    return 1
-  }
-
-  [[ "${npty_ver}" == "${_node_pty_ver}" ]] || {
-    echo "node-pty version mismatch: app=${npty_ver}, pkgbuild=${_node_pty_ver}"
-    return 1
-  }
-
   mkdir native-build
   cd native-build
 
-  cat >package.json <<'EOF'
+  cat >package.json <<'EOF_PKG'
 {
   "name": "codex-native-rebuild",
   "private": true,
   "license": "UNLICENSED"
 }
-EOF
+EOF_PKG
+
+  npm pack --pack-destination "${srcdir}" "better-sqlite3@${bs3_ver}"
+  npm pack --pack-destination "${srcdir}" "node-pty@${npty_ver}"
 
   npm install \
     --ignore-scripts \
     --no-audit \
     --no-fund \
-    "${srcdir}/better-sqlite3-${_better_sqlite3_ver}.tgz" \
-    "${srcdir}/node-pty-${_node_pty_ver}.tgz"
+    "${srcdir}/better-sqlite3-${bs3_ver}.tgz" \
+    "${srcdir}/node-pty-${npty_ver}.tgz"
 
   export npm_config_runtime=electron
   export npm_config_target="${_electron_major}.0.0"
