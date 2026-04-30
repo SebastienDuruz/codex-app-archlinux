@@ -1,9 +1,6 @@
-name: Release on Main Change or Nightly Upstream Update
+name: Nightly Release on Codex DMG Change
 
 on:
-  push:
-    branches:
-      - main
   schedule:
     - cron: '0 2 * * *'
   workflow_dispatch:
@@ -14,6 +11,9 @@ permissions:
 concurrency:
   group: release-main
   cancel-in-progress: false
+
+env:
+  DMG_URL: https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
 
 jobs:
   release:
@@ -41,7 +41,8 @@ jobs:
             python \
             hicolor-icon-theme \
             xdg-utils \
-            libarchive
+            libarchive \
+            curl
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -59,56 +60,39 @@ jobs:
           id -u builder >/dev/null 2>&1 || useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
 
-      - name: Detect releasable change
+      - name: Detect upstream DMG change
         id: detect
         working-directory: ${{ github.workspace }}
-        env:
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "reason=main push" >> "$GITHUB_OUTPUT"
-            echo "Main changed: release will proceed."
-            exit 0
+          prev_hash=""
+          if [[ -f .codex-dmg.sha256 ]]; then
+            prev_hash="$(tr -d '[:space:]' < .codex-dmg.sha256)"
           fi
 
-          probe_dir="$(mktemp -d)"
-          trap 'rm -rf "$probe_dir"' EXIT
+          tmp_dmg="$(mktemp)"
+          trap 'rm -f "$tmp_dmg"' EXIT
 
-          cp PKGBUILD "$probe_dir/PKGBUILD"
-          [[ -f .SRCINFO ]] && cp .SRCINFO "$probe_dir/.SRCINFO" || true
+          curl -fL --retry 3 --retry-delay 2 "$DMG_URL" -o "$tmp_dmg"
+          new_hash="$(sha256sum "$tmp_dmg" | awk '{print $1}')"
 
-          # Copy local source files referenced by PKGBUILD so updpkgsums can run in probe_dir.
-          # shellcheck disable=SC1091
-          source PKGBUILD
-          for src_entry in "${source[@]}"; do
-            [[ "$src_entry" == *::* ]] && continue
-            [[ "$src_entry" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]] && continue
+          cp "$tmp_dmg" "$GITHUB_WORKSPACE/Codex.dmg"
+          chown builder:builder "$GITHUB_WORKSPACE/Codex.dmg"
+          chmod 0644 "$GITHUB_WORKSPACE/Codex.dmg"
 
-            if [[ ! -f "$src_entry" ]]; then
-              echo "Missing local source file declared in PKGBUILD: $src_entry" >&2
-              exit 1
-            fi
+          echo "dmg_hash=$new_hash" >> "$GITHUB_OUTPUT"
 
-            mkdir -p "$probe_dir/$(dirname "$src_entry")"
-            cp "$src_entry" "$probe_dir/$src_entry"
-          done
-
-          chown -R builder:builder "$probe_dir"
-
-          su builder -c "cd '$probe_dir' && updpkgsums"
-          su builder -c "cd '$probe_dir' && makepkg --printsrcinfo > .SRCINFO"
-
-          if cmp -s PKGBUILD "$probe_dir/PKGBUILD" && cmp -s .SRCINFO "$probe_dir/.SRCINFO"; then
+          if [[ -n "$prev_hash" && "$prev_hash" == "$new_hash" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "reason=no packaging drift" >> "$GITHUB_OUTPUT"
-            echo "No upstream packaging change detected."
+            echo "No upstream DMG change detected."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "reason=packaging drift detected" >> "$GITHUB_OUTPUT"
-            echo "Upstream packaging drift detected: release will proceed."
+            if [[ -z "$prev_hash" ]]; then
+              echo "No previous DMG hash state found: release will proceed."
+            else
+              echo "Upstream DMG changed: ${prev_hash} -> ${new_hash}"
+            fi
           fi
 
       - name: Stop when there is nothing to release
@@ -160,15 +144,18 @@ jobs:
             exit 0
           fi
 
-      - name: Apply release version and regenerate metadata
+      - name: Apply release metadata
         working-directory: ${{ github.workspace }}
         env:
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          NEW_DMG_HASH: ${{ steps.detect.outputs.dmg_hash }}
         run: |
           set -euo pipefail
 
           sed -i -E "s/^pkgver=.*/pkgver=${NEXT_VERSION}/" PKGBUILD
           sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+          printf '%s\n' "$NEW_DMG_HASH" > .codex-dmg.sha256
 
           su builder -c "cd '$GITHUB_WORKSPACE' && updpkgsums"
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --printsrcinfo > .SRCINFO"
@@ -183,17 +170,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add PKGBUILD .SRCINFO
+          git add PKGBUILD .SRCINFO .codex-dmg.sha256
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
-          
+
           git commit -m "chore(release): bump version to ${NEXT_TAG#v}"
-          
-          git fetch origin main
-          git rebase origin/main
           git push origin HEAD:main
 
       - name: Create and push tag
@@ -239,14 +223,14 @@ jobs:
           cp -a "$EXTRACT_DIR/usr/lib/codex-app" "$PORTABLE_DIR/lib/codex-app"
           cp -a /usr/lib/electron39 "$PORTABLE_DIR/lib/electron39"
 
-          cat > "${PORTABLE_DIR}/codex-app" <<'EOF'
+          cat > "${PORTABLE_DIR}/codex-app" <<'EOF_WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
           HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
           export CODEX_APPDIR="${HERE}/lib/codex-app"
           export CODEX_ELECTRON_PATH="${HERE}/lib/electron39/electron"
           exec "${HERE}/bin/codex-app" "$@"
-          EOF
+          EOF_WRAPPER
 
           chmod +x "${PORTABLE_DIR}/codex-app"
 

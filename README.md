@@ -21,8 +21,7 @@ sudo pacman -S --needed base-devel git
 Network access is required to download:
 
 - `Codex.dmg`
-- `better-sqlite3` npm tarball
-- `node-pty` npm tarball
+- npm tarballs for native modules resolved dynamically from the app bundle
 
 ## Build Workflow
 
@@ -63,7 +62,7 @@ chmod +x codex-app-linux-x86_64/codex-app
 
 When updating package inputs:
 
-1. Update `pkgver`, source URLs/versions, and checksums in `PKGBUILD`.
+1. Update `pkgver`, source URLs/versions, and checksums in `PKGBUILD` when needed.
 2. Regenerate checksums if needed:
 
 ```bash
@@ -85,5 +84,5 @@ makepkg -f
 ## Checksum Policy
 
 `Codex.dmg` is served from a rolling CDN URL and may change without notice.
-To avoid recurring build breaks from checksum drift, the PKGBUILD uses `SKIP`
-for the DMG checksum while keeping checksums for npm tarballs pinned.
+The nightly release workflow tracks and persists the latest DMG SHA-256 in
+`.codex-dmg.sha256` and publishes a new release only when this hash changes.
