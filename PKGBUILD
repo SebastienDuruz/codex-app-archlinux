@@ -1,7 +1,7 @@
 # Maintainer: Local package build
 
 pkgname=codex-app
-pkgver=1.0.7
+pkgver=1.0.21
 pkgrel=1
 pkgdesc="Linux package of Codex Desktop"
 arch=('x86_64')
