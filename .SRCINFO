@@ -1,6 +1,6 @@
 pkgbase = codex-app
 	pkgdesc = Linux package of Codex Desktop
-	pkgver = 1.0.23
+	pkgver = 1.0.24
 	pkgrel = 1
 	url = https://developers.openai.com/codex/app/
 	arch = x86_64
