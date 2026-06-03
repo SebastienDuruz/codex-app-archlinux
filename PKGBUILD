@@ -40,19 +40,30 @@ sha256sums=('03f8e6758bc67b71af35295c42890a6b112fbd6d5789e9d7d63e4b328e1a05ec'
 
 prepare() {
   cd "${srcdir}"
-  rm -rf dmg app-extracted app.asar app.asar.unpacked native-build
+  rm -rf dmg app-extracted app.asar app.asar.unpacked native-build icon
   mkdir dmg
 
   7z x -y "Codex.dmg" -o"${srcdir}/dmg" >/dev/null
-
-  icon_icns="$(find dmg -path '*/Contents/Resources/*.icns' | head -n1)"
-  mkdir -p icon
-  icns2png -x -o icon "${icon_icns}"
 
   local appdir
   appdir="$(find dmg -maxdepth 4 -type d -name '*.app' | head -n1)"
   [[ -n "${appdir}" ]] || {
     echo "Could not find .app bundle in DMG"
+    return 1
+  }
+
+  local icon_icns
+  icon_icns="$(find "${appdir}/Contents/Resources" -maxdepth 1 -type f -name '*.icns' | sort | head -n1)"
+  [[ -n "${icon_icns}" ]] || {
+    echo "Could not find application icon in ${appdir}/Contents/Resources"
+    return 1
+  }
+
+  mkdir -p icon
+  icns2png -x -o icon "${icon_icns}"
+
+  find icon -maxdepth 1 -type f -name '*.png' | grep -q . || {
+    echo "No PNG icon was extracted from ${icon_icns}"
     return 1
   }
 
@@ -109,6 +120,13 @@ EOF_PKG
 
 package() {
   cd "${srcdir}"
+  local icon_png
+
+  icon_png="$(find icon -maxdepth 1 -type f -name '*.png' | sort -V | tail -n1)"
+  [[ -n "${icon_png}" ]] || {
+    echo "No extracted PNG icon available for packaging"
+    return 1
+  }
 
   install -Dm644 app.asar \
     "${pkgdir}/usr/lib/${pkgname}/resources/app.asar"
@@ -127,7 +145,7 @@ package() {
   install -Dm755 codex-app.sh \
     "${pkgdir}/usr/bin/codex-app"
 
-  install -Dm644 icon/*512x512*.png \
+  install -Dm644 "${icon_png}" \
     "${pkgdir}/usr/share/icons/hicolor/512x512/apps/codex-app.png"
 
   install -Dm644 codex-app.desktop \
