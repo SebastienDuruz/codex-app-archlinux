@@ -14,6 +14,7 @@ concurrency:
 
 env:
   DMG_URL: https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   release:
@@ -66,42 +67,87 @@ jobs:
         run: |
           set -euo pipefail
 
+          prev_codex_version=""
+          if [[ -f .codex-version ]]; then
+            prev_codex_version="$(tr -d '[:space:]' < .codex-version)"
+          fi
+
           prev_hash=""
           if [[ -f .codex-dmg.sha256 ]]; then
             prev_hash="$(tr -d '[:space:]' < .codex-dmg.sha256)"
           fi
 
           tmp_dmg="$(mktemp)"
-          trap 'rm -f "$tmp_dmg"' EXIT
+          tmp_extract_dir="$(mktemp -d)"
+          trap 'rm -f "$tmp_dmg"; rm -rf "$tmp_extract_dir"' EXIT
 
           curl -fL --retry 3 --retry-delay 2 "$DMG_URL" -o "$tmp_dmg"
           new_hash="$(sha256sum "$tmp_dmg" | awk '{print $1}')"
+          hash_changed=true
+          if [[ -n "$prev_hash" && "$prev_hash" == "$new_hash" ]]; then
+            hash_changed=false
+          fi
 
-          cp "$tmp_dmg" "$GITHUB_WORKSPACE/Codex.dmg"
-          chown builder:builder "$GITHUB_WORKSPACE/Codex.dmg"
-          chmod 0644 "$GITHUB_WORKSPACE/Codex.dmg"
+          dmg_listing="$(7z l -slt "$tmp_dmg")"
+          plist_path="$(awk -F' = ' '
+            $1 == "Path" && $2 ~ /\/Contents\/Info\.plist$/ {
+              print $2
+              exit
+            }
+          ' <<<"$dmg_listing")"
+
+          if [[ -z "$plist_path" ]]; then
+            echo "Could not locate Info.plist in upstream DMG" >&2
+            exit 1
+          fi
+
+          7z x -y "$tmp_dmg" "$plist_path" "-o${tmp_extract_dir}" >/dev/null
+
+          new_codex_version="$(python -c 'import plistlib, sys; info = plistlib.load(open(sys.argv[1], "rb")); version = info.get("CFBundleShortVersionString"); print(version) if version else (_ for _ in ()).throw(SystemExit("CFBundleShortVersionString not found in Info.plist"))' "$tmp_extract_dir/$plist_path")"
 
           echo "dmg_hash=$new_hash" >> "$GITHUB_OUTPUT"
+          echo "codex_version=$new_codex_version" >> "$GITHUB_OUTPUT"
+          echo "hash_changed=$hash_changed" >> "$GITHUB_OUTPUT"
 
-          if [[ -n "$prev_hash" && "$prev_hash" == "$new_hash" ]]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No upstream DMG change detected."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            if [[ -z "$prev_hash" ]]; then
-              echo "No previous DMG hash state found: release will proceed."
+          if [[ -n "$prev_codex_version" && "$prev_codex_version" == "$new_codex_version" ]]; then
+            echo "release_needed=false" >> "$GITHUB_OUTPUT"
+
+            if [[ "$hash_changed" == "true" ]]; then
+              echo "metadata_changed=true" >> "$GITHUB_OUTPUT"
+              cp "$tmp_dmg" "$GITHUB_WORKSPACE/Codex.dmg"
+              chown builder:builder "$GITHUB_WORKSPACE/Codex.dmg"
+              chmod 0644 "$GITHUB_WORKSPACE/Codex.dmg"
+              echo "No upstream Codex version change detected (${new_codex_version}), but the DMG hash changed: ${prev_hash} -> ${new_hash}"
             else
-              echo "Upstream DMG changed: ${prev_hash} -> ${new_hash}"
+              echo "metadata_changed=false" >> "$GITHUB_OUTPUT"
+              echo "No upstream Codex version or DMG hash change detected (${new_codex_version})."
+            fi
+          else
+            echo "release_needed=true" >> "$GITHUB_OUTPUT"
+            echo "metadata_changed=true" >> "$GITHUB_OUTPUT"
+            cp "$tmp_dmg" "$GITHUB_WORKSPACE/Codex.dmg"
+            chown builder:builder "$GITHUB_WORKSPACE/Codex.dmg"
+            chmod 0644 "$GITHUB_WORKSPACE/Codex.dmg"
+
+            if [[ -z "$prev_codex_version" ]]; then
+              echo "No previous Codex version state found: release will proceed with ${new_codex_version}."
+            else
+              echo "Upstream Codex version changed: ${prev_codex_version} -> ${new_codex_version}"
+            fi
+
+            if [[ "$hash_changed" == "true" && -n "$prev_hash" ]]; then
+              echo "Upstream DMG hash changed: ${prev_hash} -> ${new_hash}"
             fi
           fi
 
-      - name: Stop when there is nothing to release
-        if: steps.detect.outputs.changed != 'true'
+      - name: Stop when there is nothing to update
+        if: steps.detect.outputs.metadata_changed != 'true'
         run: |
-          echo "No release needed."
+          echo "No metadata or release update needed."
           exit 0
 
       - name: Compute next semantic version
+        if: steps.detect.outputs.release_needed == 'true'
         id: version
         working-directory: ${{ github.workspace }}
         run: |
@@ -134,6 +180,7 @@ jobs:
           echo "next_tag=$next_tag" >> "$GITHUB_OUTPUT"
 
       - name: Stop if tag already exists remotely
+        if: steps.detect.outputs.release_needed == 'true'
         working-directory: ${{ github.workspace }}
         env:
           NEXT_TAG: ${{ steps.version.outputs.next_tag }}
@@ -147,15 +194,20 @@ jobs:
       - name: Apply release metadata
         working-directory: ${{ github.workspace }}
         env:
+          RELEASE_NEEDED: ${{ steps.detect.outputs.release_needed }}
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
           NEW_DMG_HASH: ${{ steps.detect.outputs.dmg_hash }}
+          NEW_CODEX_VERSION: ${{ steps.detect.outputs.codex_version }}
         run: |
           set -euo pipefail
 
-          sed -i -E "s/^pkgver=.*/pkgver=${NEXT_VERSION}/" PKGBUILD
-          sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          if [[ "$RELEASE_NEEDED" == "true" ]]; then
+            sed -i -E "s/^pkgver=.*/pkgver=${NEXT_VERSION}/" PKGBUILD
+            sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          fi
 
           printf '%s\n' "$NEW_DMG_HASH" > .codex-dmg.sha256
+          printf '%s\n' "$NEW_CODEX_VERSION" > .codex-version
 
           su builder -c "cd '$GITHUB_WORKSPACE' && updpkgsums"
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --printsrcinfo > .SRCINFO"
@@ -163,6 +215,8 @@ jobs:
       - name: Commit release metadata
         working-directory: ${{ github.workspace }}
         env:
+          RELEASE_NEEDED: ${{ steps.detect.outputs.release_needed }}
+          NEW_CODEX_VERSION: ${{ steps.detect.outputs.codex_version }}
           NEXT_TAG: ${{ steps.version.outputs.next_tag }}
         run: |
           set -euo pipefail
@@ -170,17 +224,22 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add PKGBUILD .SRCINFO .codex-dmg.sha256
+          git add PKGBUILD .SRCINFO .codex-dmg.sha256 .codex-version
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          git commit -m "chore(release): bump version to ${NEXT_TAG#v}"
+          if [[ "$RELEASE_NEEDED" == "true" ]]; then
+            git commit -m "chore(release): bump version to ${NEXT_TAG#v}"
+          else
+            git commit -m "chore(metadata): refresh DMG checksum for Codex ${NEW_CODEX_VERSION}"
+          fi
           git push origin HEAD:main
 
       - name: Create and push tag
+        if: steps.detect.outputs.release_needed == 'true'
         working-directory: ${{ github.workspace }}
         env:
           NEXT_TAG: ${{ steps.version.outputs.next_tag }}
@@ -190,12 +249,14 @@ jobs:
           git push origin "${NEXT_TAG}"
 
       - name: Build package
+        if: steps.detect.outputs.release_needed == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg -f --noconfirm"
 
       - name: Build portable executable artifact
+        if: steps.detect.outputs.release_needed == 'true'
         id: artifacts
         working-directory: ${{ github.workspace }}
         run: |
@@ -245,6 +306,7 @@ jobs:
           echo "sha_file=$SHA_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifacts
+        if: steps.detect.outputs.release_needed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: linux-executable-${{ steps.version.outputs.next_tag }}
@@ -253,7 +315,8 @@ jobs:
             ${{ steps.artifacts.outputs.sha_file }}
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        if: steps.detect.outputs.release_needed == 'true'
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.next_tag }}
           name: Release ${{ steps.version.outputs.next_tag }}

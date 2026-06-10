@@ -84,5 +84,9 @@ makepkg -f
 ## Checksum Policy
 
 `Codex.dmg` is served from a rolling CDN URL and may change without notice.
-The nightly release workflow tracks and persists the latest DMG SHA-256 in
-`.codex-dmg.sha256` and publishes a new release only when this hash changes.
+The nightly release workflow tracks the upstream Codex app version in
+`.codex-version` and persists the latest DMG SHA-256 in `.codex-dmg.sha256`.
+A new release is published only when the extracted upstream app version changes,
+not on every DMG repack with identical app contents. When the DMG is repacked
+without a version change, the workflow refreshes checksums only and skips the
+version bump, rebuild, and GitHub release publication.

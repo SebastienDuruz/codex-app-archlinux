@@ -40,27 +40,78 @@ sha256sums=('58ab7267025878cd50e0fbb5137d6f8081c4efaa9f80884d34cf7d69b901290f'
 
 prepare() {
   cd "${srcdir}"
-  rm -rf dmg app-extracted app.asar app.asar.unpacked native-build icon
-  mkdir dmg
+  rm -rf dmg-extracted app-extracted app.asar app.asar.unpacked native-build icon
+  mkdir -p dmg-extracted
 
-  7z x -y "Codex.dmg" -o"${srcdir}/dmg" >/dev/null
+  local dmg_listing appdir icon_icns resource_prefix app_asar_path app_unpacked_prefix
+  dmg_listing="$(7z l -slt "Codex.dmg")"
 
-  local appdir
-  appdir="$(find dmg -maxdepth 4 -type d -name '*.app' | head -n1)"
+  appdir="$(awk -F' = ' '
+    $1 == "Path" && $2 ~ /\.app$/ {
+      print $2
+      exit
+    }
+  ' <<<"${dmg_listing}")"
   [[ -n "${appdir}" ]] || {
     echo "Could not find .app bundle in DMG"
     return 1
   }
 
-  local icon_icns
-  icon_icns="$(find "${appdir}/Contents/Resources" -maxdepth 1 -type f -name '*.icns' | sort | head -n1)"
+  resource_prefix="${appdir}/Contents/Resources/"
+  app_asar_path="${resource_prefix}app.asar"
+  app_unpacked_prefix="${resource_prefix}app.asar.unpacked/"
+
+  icon_icns="$(awk -F' = ' -v prefix="${resource_prefix}" '
+    $1 == "Path" && index($2, prefix) == 1 && $2 ~ /\.icns$/ {
+      suffix = substr($2, length(prefix) + 1)
+      if (suffix !~ /\//) {
+        print $2
+        exit
+      }
+    }
+  ' <<<"${dmg_listing}")"
   [[ -n "${icon_icns}" ]] || {
     echo "Could not find application icon in ${appdir}/Contents/Resources"
     return 1
   }
 
+  awk -F' = ' -v app_asar_path="${app_asar_path}" '
+    $1 == "Path" && $2 == app_asar_path {
+      found = 1
+      exit
+    }
+    END {
+      exit(found ? 0 : 1)
+    }
+  ' <<<"${dmg_listing}" || {
+    echo "Could not find ${app_asar_path} in DMG"
+    return 1
+  }
+
+  7z x -y "Codex.dmg" \
+    "${app_asar_path}" \
+    "${icon_icns}" \
+    -o"${srcdir}/dmg-extracted" >/dev/null
+
+  if awk -F' = ' -v prefix="${app_unpacked_prefix}" '
+    $1 == "Path" && index($2, prefix) == 1 {
+      found = 1
+      exit
+    }
+    END {
+      exit(found ? 0 : 1)
+    }
+  ' <<<"${dmg_listing}"; then
+    7z x -y "Codex.dmg" \
+      "${app_unpacked_prefix}*" \
+      -o"${srcdir}/dmg-extracted" >/dev/null
+  fi
+
+  local resource_dir
+  resource_dir="${srcdir}/dmg-extracted/${appdir}/Contents/Resources"
+
   mkdir -p icon
-  icns2png -x -o icon "${icon_icns}"
+  icns2png -x -o icon "${resource_dir}/$(basename "${icon_icns}")"
 
   find icon -maxdepth 1 -type f -name '*.png' | grep -q . || {
     echo "No PNG icon was extracted from ${icon_icns}"
@@ -68,11 +119,11 @@ prepare() {
   }
 
   npx --yes asar extract \
-    "${appdir}/Contents/Resources/app.asar" \
+    "${resource_dir}/app.asar" \
     app-extracted
 
-  [[ -d "${appdir}/Contents/Resources/app.asar.unpacked" ]] &&
-    cp -a "${appdir}/Contents/Resources/app.asar.unpacked" .
+  [[ -d "${resource_dir}/app.asar.unpacked" ]] &&
+    cp -a "${resource_dir}/app.asar.unpacked" .
 
   rm -rf app-extracted/node_modules/sparkle-darwin
   find app-extracted -type f \( -name '*.dylib' -o -name 'sparkle.node' \) -delete
