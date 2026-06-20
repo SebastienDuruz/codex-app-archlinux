@@ -1,7 +1,7 @@
 # Maintainer: Local package build
 
 pkgname=codex-app
-pkgver=1.0.70
+pkgver=1.0.71
 pkgrel=1
 pkgdesc="Linux package of Codex Desktop"
 arch=('x86_64')
@@ -34,7 +34,7 @@ noextract=(
   'Codex.dmg'
 )
 
-sha256sums=('e8c58c0e2bdbe063c3cd888ac9eba2eb8cfd2bbf360b3e2d27f20c920b1f99b1'
+sha256sums=('73d863ffeb8207ef566e6996033fdb1607272dd1d1760ae6dc0ec8ec9c623aea'
             'c6c7a3f61e963020d1cfeb1b6f56e42d89b98e4c0e8f9af73a84ade8b518ff59'
             '7d4460887df563d7fd5465db0ff950fb9a0b119556c9d659302359f8b12c6a7a')
 
