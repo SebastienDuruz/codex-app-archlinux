@@ -1,6 +1,6 @@
 pkgbase = codex-app
 	pkgdesc = Linux package of Codex Desktop
-	pkgver = 1.0.92
+	pkgver = 1.0.93
 	pkgrel = 1
 	url = https://developers.openai.com/codex/app/
 	arch = x86_64
@@ -17,7 +17,7 @@ pkgbase = codex-app
 	source = Codex.dmg::https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
 	source = codex-app.sh
 	source = codex-app.desktop
-	sha256sums = dec0d14edfbe84b2d11d0a5eec43cac460a0cd5ae313dd8e9638be20e8dd734d
+	sha256sums = 05a76850a5a035bb3e7e3c0b61b7cb0f359c2509e8ec1ed4810526a6bc751abe
 	sha256sums = c6c7a3f61e963020d1cfeb1b6f56e42d89b98e4c0e8f9af73a84ade8b518ff59
 	sha256sums = 7d4460887df563d7fd5465db0ff950fb9a0b119556c9d659302359f8b12c6a7a
 
